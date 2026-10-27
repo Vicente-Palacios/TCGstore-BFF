@@ -1,4 +1,6 @@
-package com.palacios_chacana.tcgstore.informes.dto;
+package com.palacios_chacana.tcgstore.module.informes.dto;
+
+import jakarta.validation.constraints.Size;
 
 import java.util.Map;
 
@@ -7,7 +9,7 @@ import java.util.Map;
  * lo decide el servidor a partir del JWT de Cognito.
  */
 public record GenerarInformeRequestDto(
-        String reportType,
+        @Size(max = 50) String reportType,
         Map<String, Object> params
 ) {
 }

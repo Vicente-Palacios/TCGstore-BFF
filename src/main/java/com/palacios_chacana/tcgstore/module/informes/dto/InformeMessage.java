@@ -1,4 +1,4 @@
-package com.palacios_chacana.tcgstore.informes.dto;
+package com.palacios_chacana.tcgstore.module.informes.dto;
 
 import java.time.Instant;
 import java.util.Map;

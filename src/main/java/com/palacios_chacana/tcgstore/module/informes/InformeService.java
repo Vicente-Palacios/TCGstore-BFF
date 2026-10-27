@@ -1,14 +1,12 @@
-package com.palacios_chacana.tcgstore.informes;
+package com.palacios_chacana.tcgstore.module.informes;
 
-import com.palacios_chacana.tcgstore.informes.dto.GenerarInformeRequestDto;
-import com.palacios_chacana.tcgstore.informes.dto.InformeMessage;
+import com.palacios_chacana.tcgstore.module.informes.client.InformeClient;
+import com.palacios_chacana.tcgstore.module.informes.dto.GenerarInformeRequestDto;
+import com.palacios_chacana.tcgstore.module.informes.dto.InformeMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
-import software.amazon.awssdk.services.sns.SnsClient;
-import software.amazon.awssdk.services.sns.model.PublishRequest;
 import tools.jackson.databind.ObjectMapper;
 
 @Service
@@ -17,22 +15,16 @@ public class InformeService {
     private static final Logger log = LoggerFactory.getLogger(InformeService.class);
     private static final String DEFAULT_REPORT_TYPE = "top-products";
 
-    private final SnsClient sns;
+    private final InformeClient informeClient;
     private final ObjectMapper objectMapper;
-    private final String topicArn;
 
-    public InformeService(SnsClient sns, ObjectMapper objectMapper,
-                          @Value("${app.sns.topic-arn:}") String topicArn) {
-        this.sns = sns;
+    public InformeService(InformeClient informeClient, ObjectMapper objectMapper) {
+        this.informeClient = informeClient;
         this.objectMapper = objectMapper;
-        this.topicArn = topicArn;
     }
 
-    /** Publica "report.requested" en SNS y devuelve el requestId generado. */
+    /** Arma el mensaje "report.requested", lo publica vía InformeClient y devuelve el requestId. */
     public String solicitarInforme(GenerarInformeRequestDto request, Jwt jwt) {
-        if (topicArn.isBlank()) {
-            throw new IllegalStateException("SNS_TOPIC_ARN no está configurado");
-        }
         // El solicitante sale del token, no del cuerpo: nadie puede pedir un informe "a nombre de" otro.
         String email = jwt.getClaimAsString("email");
         String requester = email != null ? email : jwt.getSubject();
@@ -42,10 +34,7 @@ public class InformeService {
         InformeMessage message = InformeMessage.solicitado(
                 requester, jwt.getSubject(), reportType, request != null ? request.params() : null);
 
-        String messageId = sns.publish(PublishRequest.builder()
-                .topicArn(topicArn)
-                .message(objectMapper.writeValueAsString(message))
-                .build()).messageId();
+        String messageId = informeClient.publicar(objectMapper.writeValueAsString(message));
 
         log.info("Publicado {} requestId={} snsMessageId={}",
                 message.type(), message.body().requestId(), messageId);
