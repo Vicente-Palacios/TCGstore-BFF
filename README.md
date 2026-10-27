@@ -44,7 +44,7 @@ El enunciado planteaba una arquitectura de referencia (Azure AD, RDS gestionado 
 | Despliegue en AWS EC2 con Docker/Docker Compose | ✅ EC2 + Docker, orquestado vía **GitHub Actions** | CI/CD 100% en GitHub, sin herramientas adicionales de despliegue |
 | Base de datos (no especificada explícitamente) | **PostgreSQL gestionado en Supabase** | Provisioning rápido, gratuito para el alcance del proyecto, compatible 1:1 con Spring Data JPA |
 | Gestión de secretos (Azure Key Vault, etc.) | **GitHub Actions Secrets/Variables** inyectados como variables de entorno del contenedor | Todo el ciclo de vida (build → push → deploy) ocurre en GitHub, sin depender de un vault externo |
-| RabbitMQ, Kafka + Zookeeper | No implementado en esta entrega | Fuera del alcance de este módulo (queda como roadmap) |
+| RabbitMQ, Kafka + Zookeeper | **Amazon SNS → SQS → Lambda** (guía del curso). El BFF solo publica en el topic SNS `report-events`; las colas y Lambdas viven fuera de este repo | Mensajería administrada en AWS, sin broker propio que mantener |
 
 ---
 
@@ -54,6 +54,7 @@ El enunciado planteaba una arquitectura de referencia (Azure AD, RDS gestionado 
 - **Spring Web (MVC)**
 - **Spring Security** + **OAuth2 Resource Server** (validación de JWT emitido por Cognito)
 - **Spring Data JPA** + **PostgreSQL** (driver `org.postgresql`)
+- **AWS SDK v2 (SNS)** para publicar solicitudes de informe
 - **Gradle** (wrapper incluido)
 - **Docker** (imagen `eclipse-temurin:21-jre-jammy`)
 - **GitHub Actions** para CI/CD
@@ -139,6 +140,20 @@ Base path: `/api`
 |---|---|---|
 | `GET` | `/api/health` | Verifica conectividad con la base de datos. Devuelve `{"status":"UP"}` (200) o `{"status":"DOWN","error":"..."}` (503) |
 
+### Informes — `/api/informes`
+
+| Método | Ruta | Descripción | Body | Rol requerido |
+|---|---|---|---|---|
+| `POST` | `/api/informes/generar` | Publica `report.requested` en el topic SNS `report-events`. Responde `202` con `{"informeId": "...", "status": "SOLICITADO"}` | Opcional: `{"reportType": "top-products", "params": {}}` | Autenticado |
+
+El solicitante (`requester` = email del JWT, `requesterId` = `sub`) lo decide el servidor, no el cuerpo. Mensaje publicado:
+
+```json
+{"type":"report.requested","body":{"requestId":"<uuid>","requester":"usuario@correo.cl","requesterId":"<sub>","reportType":"top-products","params":{},"requestedAt":"2026-10-26T21:00:00Z"}}
+```
+
+SNS lo reparte por el campo `type` a las colas `report-requests` (Lambda que guarda en Postgres) y `report-generation` (Lambda que arma y publica el aviso).
+
 ---
 
 ## 📂 Estructura del proyecto
@@ -156,6 +171,10 @@ src/main/java/com/palacios_chacana/tcgstore/
 │   └── SecretGatewayFilter.java   # Valida el header X-Secret-Gateway de API Gateway
 ├── security/
 │   └── CognitoJwtAuthenticationConverter.java  # Mapea cognito:groups → ROLE_*
+├── informes/
+│   ├── InformeController.java     # POST /api/informes/generar
+│   ├── InformeService.java        # Publica el mensaje en SNS
+│   └── dto/                       # GenerarInformeRequestDto / InformeMessage
 ├── health/
 │   ├── HealthCheckController.java # GET /api/health
 │   └── dto/HealthResponseDto.java
@@ -181,6 +200,11 @@ src/main/java/com/palacios_chacana/tcgstore/
 | `DB_URL` | Cadena de conexión JDBC a PostgreSQL (Supabase) | `jdbc:postgresql://aws-0-us-east-1.pooler.supabase.com:5432/postgres` |
 | `DB_USER` | Usuario de la base de datos | `postgres.xxxx` |
 | `DB_PASSWORD` | Password de la base de datos | — |
+| `SNS_TOPIC_ARN` | ARN del topic SNS `report-events` | `arn:aws:sns:us-east-2:123456789012:report-events` |
+| `AWS_REGION` | Región del topic SNS | `us-east-2` |
+| `AWS_ENDPOINT_URL` | Solo en local con LocalStack (junto con `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` de prueba) | `http://localhost:4566` |
+
+En AWS real no se definen claves: el SDK usa el **rol IAM de la instancia EC2**, que necesita el permiso `sns:Publish` sobre el topic.
 
 El `issuer-uri` de Cognito (`spring.security.oauth2.resourceserver.jwt.issuer-uri`) está fijado en `application.properties` apuntando al User Pool del proyecto; si se cambia de User Pool, hay que actualizarlo ahí.
 
@@ -254,6 +278,7 @@ Cada `push` a `main` dispara el workflow [`.github/workflows/deploy.yml`](.githu
 | `GH_CR_PAT` | Secret | Token para autenticar el `docker login` en GHCR desde el EC2 |
 | `API_GATEWAY_SECRET` | Secret | Se inyecta como variable de entorno del contenedor en producción |
 | `SUPABASE_DB_USER` / `SUPABASE_DB_PASSWORD` | Secret | Credenciales de la base de datos en Supabase |
+| `SNS_TOPIC_ARN` | Variable (`vars`) | ARN del topic SNS, inyectado como variable de entorno del contenedor |
 | `TARGET_HOST_IP` | Variable (`vars`) | IP pública de la instancia EC2 destino |
 | `GITHUB_TOKEN` | Automático | Autenticación para publicar la imagen en GHCR |
 
@@ -266,6 +291,7 @@ No se usa ningún gestor de secretos externo (Azure Key Vault, AWS Secrets Manag
 - **Amazon Cognito**: User Pool como proveedor de identidad (IDaaS) y fuente de roles vía grupos.
 - **AWS API Gateway**: punto de entrada único de la API; agrega el header secreto que valida `SecretGatewayFilter` y enruta hacia el backend.
 - **Amazon EC2**: instancia donde corre el contenedor Docker del backend (Amazon Linux).
+- **Amazon SNS / SQS / Lambda**: mensajería de informes (el BFF publica en SNS).
 - **Supabase (PostgreSQL)**: base de datos gestionada, usada como reemplazo liviano de un RDS tradicional para este alcance del proyecto.
 
 ---

@@ -1,9 +1,10 @@
 package com.palacios_chacana.tcgstore.informes;
 
 import com.palacios_chacana.tcgstore.informes.dto.GenerarInformeRequestDto;
-import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -21,14 +22,13 @@ public class InformeController {
         this.informeService = informeService;
     }
 
-    // Botón "Generar Informe" del front -> POST /api/informes/generar {"email": "..."}
+    // Botón "Generar Informe" del front -> POST /api/informes/generar (cuerpo opcional)
     @PostMapping("/generar")
-    public ResponseEntity<Map<String, String>> generar(@Valid @RequestBody GenerarInformeRequestDto request) {
-        String informeId = informeService.solicitarInforme(request);
+    public ResponseEntity<Map<String, String>> generar(
+            @RequestBody(required = false) GenerarInformeRequestDto request,
+            @AuthenticationPrincipal Jwt jwt) {
+        String requestId = informeService.solicitarInforme(request, jwt);
         return ResponseEntity.status(HttpStatus.ACCEPTED)
-                .body(Map.of(
-                        "informeId", informeId,
-                        "status", "SOLICITADO"
-                ));
+                .body(Map.of("informeId", requestId, "status", "SOLICITADO"));
     }
 }

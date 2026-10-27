@@ -105,6 +105,7 @@ jobs:
                 -e DB_USER='${{ secrets.SUPABASE_DB_USER }}' \
                 -e DB_PASSWORD='${{ secrets.SUPABASE_DB_PASSWORD }}' \
                 -e AWS_REGION='us-east-2' \
+                -e SNS_TOPIC_ARN='${{ vars.SNS_TOPIC_ARN }}' \
                 --restart unless-stopped \
                 ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
             "

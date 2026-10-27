@@ -1,9 +1,13 @@
 package com.palacios_chacana.tcgstore.informes.dto;
 
-import jakarta.validation.constraints.Email;
-import jakarta.validation.constraints.NotBlank;
+import java.util.Map;
 
+/**
+ * Cuerpo opcional de POST /api/informes/generar. El solicitante (requester) NO viene aquí:
+ * lo decide el servidor a partir del JWT de Cognito.
+ */
 public record GenerarInformeRequestDto(
-        @NotBlank @Email String email
+        String reportType,
+        Map<String, Object> params
 ) {
 }
