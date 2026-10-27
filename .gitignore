@@ -35,3 +35,12 @@ out/
 
 ### VS Code ###
 .vscode/
+
+### Secretos y archivos locales (nunca subir a git) ###
+.env
+.env.*
+*.pem
+*.key
+env-*.json
+*.zip
+application-local.properties

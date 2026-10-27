@@ -1,6 +1,8 @@
 package com.palacios_chacana.tcgstore.health;
 
 import com.palacios_chacana.tcgstore.health.dto.HealthResponseDto;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -13,6 +15,8 @@ import java.sql.Connection;
 @RestController
 @RequestMapping("/api")
 public class HealthCheckController {
+
+    private static final Logger log = LoggerFactory.getLogger(HealthCheckController.class);
 
     private final DataSource dataSource;
 
@@ -31,7 +35,9 @@ public class HealthCheckController {
                         .body(new HealthResponseDto("DOWN", "Database connection is invalid"));
             }
         } catch (Exception e) {
-            HealthResponseDto errorResponse = new HealthResponseDto("DOWN", e.getMessage());
+            // El detalle del error va al log; al cliente no se le exponen datos internos de la base.
+            log.error("Health check: falló la conexión a la base de datos", e);
+            HealthResponseDto errorResponse = new HealthResponseDto("DOWN", "Database unavailable");
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(errorResponse);
         }
     }
