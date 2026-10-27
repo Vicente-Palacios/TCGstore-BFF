@@ -35,6 +35,13 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
     runtimeOnly 'org.postgresql:postgresql'
 
+    // 4. Validación de DTOs
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+
+    // 5. AWS SDK v2: publicar en SNS (el BOM fija las versiones de todos los módulos del SDK)
+    implementation platform('software.amazon.awssdk:bom:2.29.52')
+    implementation 'software.amazon.awssdk:sns'
+
 }
 
 tasks.named('test') {

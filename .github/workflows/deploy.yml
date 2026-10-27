@@ -99,12 +99,14 @@ jobs:
                 --name ${{ env.CONTAINER_NAME }} \
                 -p 80:8080 \
                 -e PORT=8080 \
-                -e PUBLIC_HOST_URL='http://$TARGET_HOST_IP' \
                 -e API_GATEWAY_SECRET='${{ secrets.API_GATEWAY_SECRET }}' \
                 -e DB_URL='jdbc:postgresql://aws-0-us-east-1.pooler.supabase.com:5432/postgres' \
                 -e DB_USER='${{ secrets.SUPABASE_DB_USER }}' \
                 -e DB_PASSWORD='${{ secrets.SUPABASE_DB_PASSWORD }}' \
-                -e AWS_REGION='us-east-2' \
+                -e AWS_REGION='us-east-1' \
+                -e COGNITO_ISSUER_URI='${{ vars.COGNITO_ISSUER_URI }}' \
+                -e COGNITO_CLIENT_ID='${{ vars.COGNITO_CLIENT_ID }}' \
+                -e SNS_TOPIC_ARN='${{ vars.SNS_TOPIC_ARN }}' \
                 --restart unless-stopped \
                 ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
             "

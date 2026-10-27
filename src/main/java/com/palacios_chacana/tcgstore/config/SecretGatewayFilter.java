@@ -9,6 +9,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 
 @Component
 public class SecretGatewayFilter extends OncePerRequestFilter {
@@ -21,18 +23,25 @@ public class SecretGatewayFilter extends OncePerRequestFilter {
             throws ServletException, IOException {
 
         String secretHeader = request.getHeader("X-Secret-Gateway");
-        String path = request.getRequestURI();
 
-        // LOG DE DEPURACIÓN TEMPORAL
-        System.out.println("DEBUG SECRETO -> Ruta: " + path + " | Recibido: [" + secretHeader + "] | Esperado: [" + expectedSecret + "]");
-
-        // Validar que la cabecera exista y coincida exactamente con el secreto
-        if (expectedSecret == null || !expectedSecret.equals(secretHeader)) {
+        // La cabecera debe existir y coincidir exactamente con el secreto.
+        // MessageDigest.isEqual compara en tiempo constante (evita ataques por temporización).
+        if (!secretMatches(secretHeader)) {
             response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+            response.setCharacterEncoding(StandardCharsets.UTF_8.name());
             response.getWriter().write("Acceso denegado: Secreto de pasarela inválido o ausente");
             return;
         }
 
         filterChain.doFilter(request, response);
+    }
+
+    private boolean secretMatches(String header) {
+        if (header == null || expectedSecret == null || expectedSecret.isBlank()) {
+            return false;
+        }
+        return MessageDigest.isEqual(
+                expectedSecret.getBytes(StandardCharsets.UTF_8),
+                header.getBytes(StandardCharsets.UTF_8));
     }
 }
