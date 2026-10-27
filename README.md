@@ -15,297 +15,184 @@
 ⠀⠀⠀⠈⠻⣿⣦⣈⣧⡀⠀⠀⢸⣿⣿⠀⠀⢀⣼⡀⣨⣿⡿⠁⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠈⠻⠿⠿⠓⠄⠤⠘⠉⠙⠤⢀⠾⠿⣿⠟⠋
 ```
-TCG STORE
+TCGstore — Backend for Frontend (BFF)
+API REST de TCGstore desarrollada con Java y Spring Boot. Administra el catálogo de cartas en PostgreSQL, valida JWT de Cognito y publica solicitudes de informes en Amazon SNS.
+Arquitectura
+El navegador llama al frontend y este consume el API Gateway. El Gateway dirige las solicitudes al BFF, que accede a PostgreSQL en Supabase y publica eventos en SNS. Las colas y Lambdas procesan los informes de forma asíncrona. Esta es la integración prevista; debe verificarse para cada despliegue.
+Tecnologías y requisitos
+- Java 21 y Gradle Wrapper incluido.
+- Spring Boot 4.1.1, Spring Security, OAuth2 Resource Server y Spring Data JPA.
+- PostgreSQL, AWS SDK para SNS y Docker para despliegue.
+- Base de datos, Cognito, secreto compartido y SNS configurados según el ambiente.
+Variables de entorno
+Variable	Propósito
+DB_URL	URL JDBC PostgreSQL, por ejemplo jdbc:postgresql://<host>:5432/postgres.
+DB_USER	Usuario de base de datos.
+DB_PASSWORD	Contraseña de base de datos.
+COGNITO_ISSUER_URI	Issuer del User Pool de Cognito.
+COGNITO_CLIENT_ID	Identificador del cliente esperado.
+API_GATEWAY_SECRET	Valor esperado en X-Secret-Gateway.
+SNS_TOPIC_ARN	ARN del topic para publicar solicitudes de informe.
+AWS_REGION	Región AWS para el SDK.
+PORT	Puerto HTTP; por defecto 8080.
 
-Vicente Palacios 
-Isak Chacana
-# TCG Store — Backend (API de Inventario)
 
-API REST construida con **Spring Boot 4 + Java 21** para la plataforma **TCG Store**. Expone la gestión de inventario de cartas coleccionables, protegida con JWT de **Amazon Cognito** y pensada para vivir detrás de **AWS API Gateway**, corriendo en un contenedor Docker sobre **EC2**.
+Usa credenciales AWS temporales o un rol con permiso sns:Publish para el topic correspondiente. El SDK usa la cadena de credenciales habitual. SNS_TOPIC_ARN tiene valor vacío por defecto, pero se necesita un topic válido para publicar informes.
 
-> El cliente web (React) que consume esta API está en un repositorio aparte — ver [`my-app-tcgstore`](#).
-
----
-
-## 🧩 Contexto del proyecto
-
-TCG Store responde al caso de una red de 20 tiendas de cartas coleccionables (TCG) que necesita centralizar ventas, inventario, pedidos, notificaciones, reportes y auditoría en una sola plataforma corporativa, con autenticación centralizada y control de acceso por rol.
-
-Este repositorio implementa el **microservicio de inventario de cartas**, el primer módulo de esa plataforma: un CRUD protegido por rol, con salud del servicio y persistencia en base de datos administrada. Los demás componentes descritos en el caso original (mensajería asíncrona, streaming de eventos, notificaciones, microservicios de pedidos/ventas) quedan como evolución futura del proyecto.
-
-### Decisiones de implementación vs. el enunciado original
-
-El enunciado planteaba una arquitectura de referencia (Azure AD, RDS gestionado tradicional, etc.); este proyecto la adapta usando herramientas nativas de **GitHub** y **AWS**, manteniendo la misma intención (login corporativo centralizado, backend detrás de un gateway, despliegue containerizado):
-
-| Enunciado del caso | Implementado en este proyecto | Motivo |
-|---|---|---|
-| Login corporativo con Azure AD (IDaaS) | **Amazon Cognito** (User Pool + grupos como roles) | Integración nativa con el resto del stack AWS (API Gateway, IAM) |
-| Backend Spring Boot detrás de AWS API Gateway | ✅ Se mantiene tal cual | — |
-| Despliegue en AWS EC2 con Docker/Docker Compose | ✅ EC2 + Docker, orquestado vía **GitHub Actions** | CI/CD 100% en GitHub, sin herramientas adicionales de despliegue |
-| Base de datos (no especificada explícitamente) | **PostgreSQL gestionado en Supabase** | Provisioning rápido, gratuito para el alcance del proyecto, compatible 1:1 con Spring Data JPA |
-| Gestión de secretos (Azure Key Vault, etc.) | **GitHub Actions Secrets/Variables** inyectados como variables de entorno del contenedor | Todo el ciclo de vida (build → push → deploy) ocurre en GitHub, sin depender de un vault externo |
-| RabbitMQ, Kafka + Zookeeper | **Amazon SNS → SQS → Lambda** (guía del curso). El BFF solo publica en el topic SNS `report-events`; las colas y Lambdas viven fuera de este repo | Mensajería administrada en AWS, sin broker propio que mantener |
-
----
-
-## 🛠️ Stack técnico
-
-- **Java 21** + **Spring Boot 4**
-- **Spring Web (MVC)**
-- **Spring Security** + **OAuth2 Resource Server** (validación de JWT emitido por Cognito)
-- **Spring Data JPA** + **PostgreSQL** (driver `org.postgresql`)
-- **AWS SDK v2 (SNS)** para publicar solicitudes de informe
-- **Gradle** (wrapper incluido)
-- **Docker** (imagen `eclipse-temurin:21-jre-jammy`)
-- **GitHub Actions** para CI/CD
-
----
-
-## 🏗️ Arquitectura y flujo de una petición
-
-```
-Usuario (React app)
-      │  Authorization: Bearer <id_token de Cognito>
-      ▼
-Amazon Cognito ── valida sesión / emite JWT con "cognito:groups"
-      │
-      ▼
-AWS API Gateway ── agrega header X-Secret-Gateway
-      │
-      ▼
-EC2 (Docker) → Spring Boot
-      ├── SecretGatewayFilter   → valida X-Secret-Gateway (bloquea tráfico que no venga del Gateway)
-      ├── OAuth2 Resource Server → valida firma/emisor del JWT contra el User Pool de Cognito
-      ├── CognitoJwtAuthenticationConverter → mapea "cognito:groups" a ROLE_Admin / ROLE_Colaborador / ROLE_Cliente
-      └── @PreAuthorize en cada endpoint → autoriza según rol
-      │
-      ▼
-Supabase (PostgreSQL) ── persistencia de cartas
-```
-
-**Doble capa de seguridad** por diseño:
-1. `SecretGatewayFilter`: rechaza cualquier request que no incluya el header secreto compartido con API Gateway (evita que alguien le pegue directo a la IP de EC2, saltándose el Gateway).
-2. `Spring Security + JWT`: valida que el token venga firmado por el User Pool de Cognito configurado (`issuer-uri`) y aplica autorización por rol en cada endpoint.
-
----
-
-## 🔐 Seguridad y roles
-
-Los roles se leen del claim `cognito:groups` del JWT y se mapean a authorities `ROLE_<grupo>` de Spring Security:
-
-| Rol | `GET` (listar/ver) | `POST` / `PUT` / `PATCH` | `DELETE` |
-|---|:---:|:---:|:---:|
-| Cliente | ✅ | ❌ | ❌ |
-| Colaborador | ✅ | ✅ | ❌ |
-| Admin | ✅ | ✅ | ✅ |
-
-Toda ruta no listada explícitamente requiere autenticación (`anyRequest().authenticated()`), por lo que no hay endpoints públicos salvo que se habiliten explícitamente (ver nota sobre `/api/health` en `SecurityConfig`).
-
----
-
-## 🔌 Endpoints
-
-Base path: `/api`
-
-### Cartas — `/api/cards`
-
-| Método | Ruta | Descripción | Body | Rol requerido |
-|---|---|---|---|---|
-| `GET` | `/api/cards` | Lista todas las cartas del inventario | — | Autenticado |
-| `GET` | `/api/cards/{id}` | Obtiene una carta por id (404 si no existe) | — | Autenticado |
-| `POST` | `/api/cards` | Crea una carta nueva | `CardRequestDto` | Admin, Colaborador |
-| `PUT` | `/api/cards/{id}` | Reemplaza todos los campos de una carta | `CardRequestDto` | Admin, Colaborador |
-| `PATCH` | `/api/cards/{id}` | Actualiza solo los campos enviados (no nulos) | `CardRequestDto` (parcial) | Admin, Colaborador |
-| `DELETE` | `/api/cards/{id}` | Elimina una carta (204 si éxito, 404 si no existe) | — | Admin |
-
-**`CardRequestDto` / `CardResponseDto`**
-
-```json
-{
-  "name": "Pikachu",
-  "game": "Pokémon",
-  "setName": "Base Set",
-  "rarity": "Común",
-  "condition": "Near Mint",
-  "price": 1000.0,
-  "stock": 1
-}
-```
-
-`CardResponseDto` agrega el campo `id` (UUID generado por el backend).
-
-### Salud del servicio — `/api/health`
-
-| Método | Ruta | Descripción |
-|---|---|---|
-| `GET` | `/api/health` | Verifica conectividad con la base de datos. Devuelve `{"status":"UP"}` (200) o `{"status":"DOWN","error":"..."}` (503) |
-
-### Informes — `/api/informes`
-
-| Método | Ruta | Descripción | Body | Rol requerido |
-|---|---|---|---|---|
-| `POST` | `/api/informes/generar` | Publica `report.requested` en el topic SNS `report-events`. Responde `202` con `{"informeId": "...", "status": "SOLICITADO"}` | Opcional: `{"reportType": "top-products", "params": {}}` | Autenticado |
-
-El solicitante (`requester` = email del JWT, `requesterId` = `sub`) lo decide el servidor, no el cuerpo. Mensaje publicado:
-
-```json
-{"type":"report.requested","body":{"requestId":"<uuid>","requester":"usuario@correo.cl","requesterId":"<sub>","reportType":"top-products","params":{},"requestedAt":"2026-10-26T21:00:00Z"}}
-```
-
-SNS lo reparte por el campo `type` a las colas `report-requests` (Lambda que guarda en Postgres) y `report-generation` (Lambda que arma y publica el aviso).
-
----
-
-## 📂 Estructura del proyecto
-
-```
-src/main/java/com/palacios_chacana/tcgstore/
-├── cards/
-│   ├── CardController.java        # Endpoints REST de /api/cards
-│   ├── CardService.java           # Lógica de negocio (CRUD)
-│   ├── CardRepository.java        # Spring Data JPA repository
-│   ├── dto/                       # CardRequestDto / CardResponseDto
-│   └── entity/Card.java           # Entidad JPA (tabla "cards")
-├── config/
-│   ├── SecurityConfig.java        # Cadena de filtros, JWT resource server, @PreAuthorize
-│   └── SecretGatewayFilter.java   # Valida el header X-Secret-Gateway de API Gateway
-├── security/
-│   └── CognitoJwtAuthenticationConverter.java  # Mapea cognito:groups → ROLE_*
-├── informes/
-│   ├── InformeController.java     # POST /api/informes/generar
-│   ├── InformeService.java        # Publica el mensaje en SNS
-│   └── dto/                       # GenerarInformeRequestDto / InformeMessage
-├── health/
-│   ├── HealthCheckController.java # GET /api/health
-│   └── dto/HealthResponseDto.java
-└── TcGstoreApplication.java       # Entry point
-```
-
----
-
-## 🚀 Puesta en marcha local
-
-### Requisitos
-- JDK 21
-- Una base de datos PostgreSQL accesible (local, o el proyecto de Supabase del equipo)
-- Un User Pool de Cognito configurado (o las credenciales del ambiente compartido)
-
-### Variables de entorno
-
-| Variable | Descripción | Ejemplo |
-|---|---|---|
-| `PORT` | Puerto en el que corre la app | `8080` |
-| `PUBLIC_HOST_URL` | URL pública del servicio (informativa) | `http://localhost:8080` |
-| `API_GATEWAY_SECRET` | Secreto compartido con API Gateway, validado por `SecretGatewayFilter` | `secreto_local` |
-| `DB_URL` | Cadena de conexión JDBC a PostgreSQL (Supabase) | `jdbc:postgresql://aws-0-us-east-1.pooler.supabase.com:5432/postgres` |
-| `DB_USER` | Usuario de la base de datos | `postgres.xxxx` |
-| `DB_PASSWORD` | Password de la base de datos | — |
-| `SNS_TOPIC_ARN` | ARN del topic SNS `report-events` | `arn:aws:sns:us-east-2:123456789012:report-events` |
-| `AWS_REGION` | Región del topic SNS | `us-east-2` |
-| `AWS_ENDPOINT_URL` | Solo en local con LocalStack (junto con `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` de prueba) | `http://localhost:4566` |
-
-En AWS real no se definen claves: el SDK usa el **rol IAM de la instancia EC2**, que necesita el permiso `sns:Publish` sobre el topic.
-
-El `issuer-uri` de Cognito (`spring.security.oauth2.resourceserver.jwt.issuer-uri`) está fijado en `application.properties` apuntando al User Pool del proyecto; si se cambia de User Pool, hay que actualizarlo ahí.
-
-### Ejecutar en local
-
-```bash
-# Linux/macOS
-export DB_URL="jdbc:postgresql://<host>:5432/postgres"
-export DB_USER="postgres"
-export DB_PASSWORD="..."
-export API_GATEWAY_SECRET="secreto_local"
-
-./gradlew bootRun
-```
-
-```powershell
-# Windows
-$env:DB_URL="jdbc:postgresql://<host>:5432/postgres"
-$env:DB_USER="postgres"
-$env:DB_PASSWORD="..."
-$env:API_GATEWAY_SECRET="secreto_local"
-
+No guardes contraseñas, tokens ni claves en el repositorio. Para ejecutar en local, define las variables en la sesión de PowerShell o en la configuración de ejecución del IDE. El secreto compartido lo agrega el Gateway; no debe estar en el frontend.
+Compilación y ejecución
+En PowerShell, desde la raíz:
+.\gradlew.bat clean test
+.\gradlew.bat bootJar
 .\gradlew.bat bootRun
+bootRun requiere las variables y servicios correspondientes. Los tests usan su configuración propia; un build exitoso no sustituye una prueba de conexión real con Cognito, la base de datos y SNS.
+
+El proyecto incluye Dockerfile y un workflow de GitHub Actions. Antes de desplegar, revisa sus variables, secretos y destinos: el workflow proporcionado se activa para main y utiliza configuración específica de EC2 y la base de datos.
+API y permisos
+Método	Ruta	Acceso
+GET	/api/cards, /api/cards/{id}	Usuario autenticado.
+POST	/api/cards	Admin o Colaborador.
+PUT / PATCH	/api/cards/{id}	Admin o Colaborador.
+DELETE	/api/cards/{id}	Admin.
+POST	/api/informes/generar	Admin.
+GET	/api/health	Autenticación requerida en esta configuración.
+
+
+Las peticiones protegidas pasan por Spring Security y el filtro de X-Secret-Gateway; la configuración permite peticiones OPTIONS para CORS. Revisa la configuración efectiva del proxy y Gateway para suministrar la cabecera y permitir los orígenes necesarios.
+
+El decoder valida firma mediante las claves del issuer, expiración, issuer y cliente esperado a través de aud o client_id; los grupos de Cognito se convierten en roles. Coordina el tipo de token y scopes entre frontend, Gateway y BFF: la validación de cliente no equivale por sí sola a validar scopes.
+Informes
+POST /api/informes/generar acepta un cuerpo opcional con reportType y params. El servidor obtiene la identidad desde el JWT, crea un requestId y publica un evento report.requested en SNS. Ante una publicación correcta responde:
+{"informeId":"<identificador>","status":"SOLICITADO"}
+El estado HTTP es 202 Accepted: solo confirma la aceptación de la solicitud. El procesamiento posterior pertenece al repositorio de Lambdas.
+Estructura
+- cards/: controlador, servicio, entidad, repositorio y DTOs de cartas.
+- module/informes/: solicitud y publicación de eventos.
+- security/ y config/: JWT, roles y filtro del Gateway.
+- health/: endpoint de estado.
+- src/main/resources/application.properties: configuración por variables de entorno.
+- .github/workflows/deploy.yml: automatización de despliegue.
+Base de datos: spring.jpa.hibernate.ddl-auto=update permite cambios automáticos de esquema al iniciar; revisa su conveniencia antes de usarlo en producción y no asumas que reemplaza migraciones y respaldos.
+Diseño por capas
+```mermaid
+flowchart TD
+  G[API Gateway] --> F[Filtro del secreto y validación JWT]
+  F --> C[Controllers]
+  C --> S[Services]
+  S --> R[CardRepository]
+  R --> D[PostgreSQL]
+  S --> I[InformeClient]
+  I --> N[Amazon SNS]
 ```
+El controlador recibe y valida solicitudes HTTP. El servicio coordina la operación. El repositorio accede a la entidad Card mediante JPA. Los DTOs separan el contrato HTTP del modelo persistido. El módulo de informes publica el evento sin ejecutar las tareas que corresponden a las Lambdas.
+Configuración local de ejemplo
+Define los valores reales solo en tu entorno de ejecución. En PowerShell:
+$env:DB_URL = "jdbc:postgresql://<host>:5432/postgres"
+$env:DB_USER = "<usuario>"
+$env:DB_PASSWORD = "<contrasena>"
+$env:COGNITO_ISSUER_URI = "https://cognito-idp.<region>.amazonaws.com/<pool-id>"
+$env:COGNITO_CLIENT_ID = "<client-id>"
+$env:API_GATEWAY_SECRET = "<secreto-compartido>"
+$env:AWS_REGION = "us-east-1"
+$env:SNS_TOPIC_ARN = "arn:aws:sns:us-east-1:<cuenta>:report-events"
+.\gradlew.bat bootRun
+Los marcadores deben reemplazarse antes de ejecutar. Evita introducir secretos en terminales grabadas, capturas o archivos versionados. La URL JDBC de Java y DATABASE_URL de las Lambdas tienen formatos diferentes aunque apunten a la misma base de datos.
+Linux y macOS
+chmod +x gradlew
+./gradlew clean test bootJar
+./gradlew bootRun
+Para ejecutar el JAR generado, utiliza su nombre real dentro de build/libs/. El proceso debe recibir las mismas variables de configuración.
+Contrato de cartas
+Campos de creación/actualización:
+Campo	Tipo	Uso
+name	string	Nombre.
+game	string	Juego.
+setName	string	Edición.
+rarity	string	Rareza.
+condition	string	Estado físico.
+price	number	Precio.
+stock	integer	Existencias.
+imageUrl	string	URL de imagen.
 
-> ⚠️ Al probar en local sin pasar por API Gateway, cualquier request necesita el header `X-Secret-Gateway: <API_GATEWAY_SECRET>` además del `Authorization: Bearer <jwt>`, o `SecretGatewayFilter` la rechazará con 403.
 
-### Tests
+Ejemplo de cuerpo para POST o PUT:
+{
+  "name": "Carta de ejemplo",
+  "game": "Pokémon",
+  "setName": "Edición de ejemplo",
+  "rarity": "Secreta",
+  "condition": "Near Mint",
+  "price": 100,
+  "stock": 3,
+  "imageUrl": "https://example.com/carta.png"
+}
+POST y PUT emplean el grupo de validación OnWrite; PATCH usa la validación predeterminada y permite actualización parcial. Los grupos de Bean Validation afectan qué restricciones se ejecutan: no debe asumirse que todas las anotaciones del DTO se aplican en todos los métodos. El ID no se toma del cuerpo de creación.
+Respuestas
+- Creación: 201 Created.
+- Lectura y actualización correctas: 200 OK.
+- Eliminación correcta: 204 No Content.
+- Carta no encontrada en operaciones por ID: 404 Not Found.
+- Validación de cuerpo rechazada: normalmente 400 Bad Request.
+- JWT rechazado o ausente: normalmente 401 Unauthorized, si se superó el filtro de secreto.
+- Secreto ausente/incorrecto o permisos de rol insuficientes: 403 Forbidden.
+El orden de los filtros importa: una llamada directa sin secreto puede recibir 403 antes de que se compruebe el JWT.
+Contrato del evento de informe
+Ejemplo ilustrativo del mensaje publicado en SNS:
+{
+  "type": "report.requested",
+  "body": {
+    "requestId": "identificador-unico",
+    "requester": "usuario@example.com",
+    "requesterId": "sub-de-cognito",
+    "reportType": "top-products",
+    "params": {},
+    "requestedAt": "2026-10-27T12:00:00Z"
+  }
+}
+requester se toma del claim email o, si falta, del sub. requesterId conserva el sub. El tipo predeterminado es top-products. El cliente no puede escoger otra identidad mediante el cuerpo de la petición. Aceptar un valor reportType no implica que las Lambdas implementen todos los tipos posibles.
+Salud y diagnóstico
+GET /api/health intenta obtener una conexión y validarla. Responde UP si funciona y 503 con estado DOWN si la conexión falla. Los detalles internos se escriben en logs, no en el mensaje de error de la base enviado al cliente. No es una prueba de SNS ni una verificación completa de todos los servicios.
 
-```bash
-./gradlew test
-```
+Para una prueba directa local desde PowerShell, con valores temporales configurados:
+$headers = @{
+  Authorization = "Bearer <token-de-prueba>"
+  "X-Secret-Gateway" = $env:API_GATEWAY_SECRET
+}
+Invoke-RestMethod -Uri "http://localhost:8080/api/health" -Headers $headers
+En peticiones por API Gateway, la cabecera secreta la debe incorporar el Gateway. El filtro del secreto también se aplica a OPTIONS: es conveniente que el Gateway responda los preflight de CORS sin enviarlos al BFF.
+Docker y entrega continua
+El Dockerfile utiliza Temurin 21 JRE, copia el JAR previamente compilado y ejecuta Java con usuario sin privilegios. Aunque declara EXPOSE 80, el puerto efectivo de Spring es el definido por PORT o 8080: EXPOSE no cambia el puerto del proceso.
+.\gradlew.bat bootJar
+docker build -t tcgstore-bff .
+Para iniciar el contenedor, pasa las variables de configuración mediante un mecanismo local seguro y publica el puerto del proceso. El workflow proporcionado usa 80:8080 en EC2 y define PORT=8080.
+Configuración requerida en GitHub Actions
+Tipo	Nombre
+Variable	TARGET_HOST_IP
+Variable	COGNITO_ISSUER_URI
+Variable	COGNITO_CLIENT_ID
+Variable	SNS_TOPIC_ARN
+Secret	EC2_SSH_KEY
+Secret	API_GATEWAY_SECRET
+Secret	SUPABASE_DB_USER
+Secret	SUPABASE_DB_PASSWORD
+Secret	GH_CR_PAT
 
----
 
-## 🐳 Docker
+GITHUB_TOKEN se utiliza para publicar la imagen desde Actions. GH_CR_PAT se usa para descargarla en EC2. El workflow contiene el nombre de imagen vicente-palacios/tcgstore, un host de Supabase fijo y región us-east-1: adáptalos si despliegas desde un fork. También espera Amazon Linux y ec2-user.
 
-```bash
-./gradlew bootJar -x test
-docker build -t tcgstore .
-docker run -d -p 80:8080 \
-  -e PORT=8080 \
-  -e API_GATEWAY_SECRET=... \
-  -e DB_URL=... \
-  -e DB_USER=... \
-  -e DB_PASSWORD=... \
-  tcgstore
-```
+El build del workflow ejecuta bootJar -x test, por lo que no ejecuta los tests. Un resultado verde de despliegue no reemplaza la ejecución de pruebas ni la verificación funcional. El rol de EC2 debe permitir la publicación en el topic; no es necesario incluir claves AWS estáticas en la imagen.
+Verificación y problemas frecuentes
+Situación	Revisión
+La aplicación no inicia	Variables obligatorias, Java 21 y acceso a PostgreSQL.
+403 antes de validar JWT	Cabecera y secreto del Gateway.
+401 con secreto correcto	Expiración, firma, issuer y cliente del JWT.
+403 con autenticación válida	Grupos y reglas @PreAuthorize.
+Error al solicitar informe	ARN, región, credenciales/rol y permiso SNS.
+API Gateway falla al integrar	Destino EC2, puerto, disponibilidad y configuración de red.
+Workflow falla en un fork	Imagen GHCR, permisos del paquete, variables y secrets propios.
 
-La imagen corre con un usuario sin privilegios (`springuser`) y expone el puerto `80` dentro del contenedor mapeado a `8080` de la app.
 
----
-
-## ⚙️ CI/CD — GitHub Actions → EC2
-
-Cada `push` a `main` dispara el workflow [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml), que:
-
-1. Compila el proyecto con **Gradle** (JDK 21, `./gradlew bootJar -x test`).
-2. Construye la imagen Docker y la publica en **GitHub Container Registry (GHCR)**: `ghcr.io/vicente-palacios/tcgstore:latest`.
-3. Se conecta por **SSH** a la instancia **EC2** (Amazon Linux) y, de forma idempotente:
-    - Provisiona swap (2GB) si no existe.
-    - Instala Docker si no está presente.
-    - Descarga la última imagen desde GHCR.
-    - Detiene/elimina el contenedor anterior y levanta el nuevo, mapeando el puerto `80` del host al `8080` del contenedor.
-
-### Secrets y variables usados en GitHub
-
-| Nombre | Tipo | Uso |
-|---|---|---|
-| `EC2_SSH_KEY` | Secret | Llave privada para conectarse por SSH a la instancia EC2 |
-| `GH_CR_PAT` | Secret | Token para autenticar el `docker login` en GHCR desde el EC2 |
-| `API_GATEWAY_SECRET` | Secret | Se inyecta como variable de entorno del contenedor en producción |
-| `SUPABASE_DB_USER` / `SUPABASE_DB_PASSWORD` | Secret | Credenciales de la base de datos en Supabase |
-| `SNS_TOPIC_ARN` | Variable (`vars`) | ARN del topic SNS, inyectado como variable de entorno del contenedor |
-| `TARGET_HOST_IP` | Variable (`vars`) | IP pública de la instancia EC2 destino |
-| `GITHUB_TOKEN` | Automático | Autenticación para publicar la imagen en GHCR |
-
-No se usa ningún gestor de secretos externo (Azure Key Vault, AWS Secrets Manager, etc.): todo el ciclo de despliegue —build, push de imagen y entrega de credenciales al contenedor— vive dentro de GitHub Actions.
-
----
-
-## ☁️ Infraestructura AWS utilizada
-
-- **Amazon Cognito**: User Pool como proveedor de identidad (IDaaS) y fuente de roles vía grupos.
-- **AWS API Gateway**: punto de entrada único de la API; agrega el header secreto que valida `SecretGatewayFilter` y enruta hacia el backend.
-- **Amazon EC2**: instancia donde corre el contenedor Docker del backend (Amazon Linux).
-- **Amazon SNS / SQS / Lambda**: mensajería de informes (el BFF publica en SNS).
-- **Supabase (PostgreSQL)**: base de datos gestionada, usada como reemplazo liviano de un RDS tradicional para este alcance del proyecto.
-
----
-Captura 1 — Respuesta 200 (token válido, GET permitido a cualquier autenticado):
-
-Se realizó una petición GET /api/cards con un token JWT válido de Cognito (usuario con rol Colaborador) y el header X-Secret-Gateway correcto. El backend respondió 200 OK, devolviendo el listado de cartas en formato JSON, confirmando que la autenticación y la conexión a la base de datos funcionan correctamente.
-
-<img width="907" height="466" alt="image" src="https://github.com/user-attachments/assets/69e391b0-97c6-4cef-98ab-ab5b2c7202f2" />
-
-Captura 2 — Respuesta 403 (token válido, pero sin el rol requerido):
-
-Se realizó una petición DELETE /api/cards/{id} con el mismo token válido de un usuario Colaborador. El backend respondió 403 Forbidden con el mensaje insufficient_scope, ya que el endpoint de eliminación requiere el rol Admin (@PreAuthorize("hasRole('Admin')")). Esto confirma que la autorización basada en roles funciona correctamente: el usuario está autenticado, pero no autorizado para esta acción específica.
-
-<img width="883" height="451" alt="image" src="https://github.com/user-attachments/assets/29a859dd-14a4-4116-9e74-4acb811d23f9" />
+Prueba con Admin, Colaborador y Cliente; conserva evidencias de 200/201/204, 401/403 y 202 según la operación. Ejecuta además AudienceValidatorTest para validar el comportamiento del cliente esperado. Verifica el flujo de informes en las Lambdas usando el identificador de solicitud.
 
 
 
