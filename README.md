@@ -196,4 +196,33 @@ Prueba con Admin, Colaborador y Cliente; conserva evidencias de 200/201/204, 401
 
 
 
+flowchart TD
+    U["Usuario en el navegador"] --> V["React alojado en Vercel"]
+    V <-->|"Iniciar sesión"| C["Amazon Cognito"]
+    V -->|"Petición + JWT"| G["API Gateway"]
+    G -->|"JWT válido + cabecera secreta"| B["BFF Spring Boot en EC2"]
+
+    B <-->|"Consultar y modificar cards"| DB["Supabase · PostgreSQL"]
+    B -->|"Publica report.requested"| SNS["Amazon SNS"]
+    B -->|"Responde 202 + informeId"| V
+
+    SNS --> Q1["SQS · solicitudes"]
+    SNS --> Q2["SQS · informes"]
+    SNS --> Q3["SQS · stock"]
+    SNS --> Q4["SQS · correos"]
+
+    Q1 --> L1["Lambda recorder"]
+    Q2 --> L2["Lambda generator"]
+    Q3 --> L3["Lambda stock-alert"]
+    Q4 --> L4["Lambda mailer"]
+
+    L1 -->|"Guarda report_requests"| DB
+    L2 -->|"Lee top 10 de cards"| DB
+    L3 -->|"Lee stock de cards"| DB
+    L4 -->|"Lee cartas Secretas"| DB
+
+    L2 --> A["API externa de avisos"]
+    L3 --> A
+    L4 --> E["API externa de correo"]
+
 
